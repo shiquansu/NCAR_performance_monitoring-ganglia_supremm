@@ -1,0 +1,1 @@
+['GOps', 'MFLOPs', 'boottime', 'bytes_in', 'bytes_out', 'cpu_aidle', 'cpu_idle', 'cpu_nice', 'cpu_num', 'cpu_speed', 'cpu_system', 'cpu_user', 'cpu_wio', 'disk_free', 'disk_total', 'entropy_avail', 'load_fifteen', 'load_five', 'load_one', 'mem_buffers', 'mem_cached', 'mem_free', 'mem_shared', 'mem_total', 'part_max_used', 'pkts_in', 'pkts_out', 'proc_run']

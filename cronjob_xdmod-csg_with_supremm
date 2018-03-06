@@ -1,0 +1,28 @@
+#!/bin/bash
+TS="-2 days"
+rrd_to_pcp_script_dir="/home/xdmod/NCAR_performance_monitoring/scripts/"
+log_dir="/home/xdmod/log/"
+cd $rrd_to_pcp_script_dir
+pwd
+
+[ ! -z "$1" ] && TS="$1" # if(&&) the first input argument ($1) is not null([ ! -z ...], then set TS to the value of the first input argument (TS="$1")
+
+QD=`date -d "-1 days" +%Y%m%d`
+echo "$QD, cheyenne first try" >> query_date.txt
+python extract_rrd cheyenne $QD > ${log_dir}screenoutput${QD}cheyenne1.txt 2>${log_dir}error${QD}cheyenne1.txt
+python refine_nodelist.py -d $QD -m cheyenne -r 2
+fn=`grep "Cannot collect: " screenoutput${QD}cheyenne1.txt`
+echo "$QD, second try on ${fn} cheyenne nodes." >> query_date.txt
+python extract_rrd cheyenne $QD -nfp /home/xdmod/NCAR_performance_monitoring/scripts/cheyenne-NodeList-central-${QD}.txt -opd /home/xdmod/data/pcp-logs/cheyenne > ${log_dir}screenoutput${QD}cheyenne2.txt 2>${log_dir}error${QD}cheyenne2.txt
+fn=`grep "Cannot collect: " screenoutput${QD}cheyenne2.txt`
+echo "$QD, ${fn} cheyenne nodes left." >> query_date.txt
+rm -f /home/xdmod/NCAR_performance_monitoring/scripts/cheyenne-NodeList-central-${QD}.txt
+QD1=`date -d "-1 days" +%Y-%m-%d`
+QD2=`date -d "-2 days" +%Y-%m-%d`
+
+indexarchives.py -d -r cheyenne --mindate=${QD2} > ${log_dir}screenoutput${QD}cheyenne_index.txt 2>${log_dir}error${QD}cheyenne_index.txt
+summarize_jobs.py -r cheyenne -s "${QD1} 00:00:00" -e "${QD1} 23:59:00" > ${log_dir}screenoutput${QD}cheyenne_summarize.txt 2>${log_dir}error${QD}cheyenne_summarize.txt
+aggregate_supremm.sh > ${log_dir}screenoutput${QD}cheyenne_aggregate.txt 2>${log_dir}error${QD}cheyenne_aggregate.txt
+echo "done ${QD}"
+
+cd /home/xdmod

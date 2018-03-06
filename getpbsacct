@@ -1,0 +1,112 @@
+#!/usr/bin/env python
+import argparse #yum install python-argparse.noarch
+import os
+import copy
+import socket
+import subprocess 
+import pipes
+import sys
+import re
+import tempfile
+import shutil
+import syslog
+import datetime
+import time
+import yaml
+import fcntl
+
+def msg(*args):
+    """ Send message to user """
+    out = ' '.join(map(str,args)) + '\n';
+    sys.stderr.write(out);
+    syslog.syslog(out)
+def exec_to_syslog ( cmd, cwd ):
+    """ Runs cmd and places Return Value into returned list. stdout and stderror are sent to syslog  """
+    if args.verbose:
+        msg('Running command: %s' % cmd) 
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd)
+    stdout,stderr = p.communicate()
+    for line in stdout.split("\n"):
+	syslog.syslog('cmd output: %s' % (line))
+        print line
+    return [p.returncode, stdout ]
+def exec_to_string ( cmd, cwd ):
+    """ Runs cmd and places Return Value, STDOUT, STDERR into returned list  """
+    if args.verbose:
+        msg('Running command: %s' % cmd) 
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    stdout, stderr = p.communicate()
+    return [p.returncode, stdout, stderr ]
+def exec_to_string_with_input ( cmd, input, cwd):
+    """ Runs cmd, sends input to STDIN and places Return Value, STDOUT, STDERR into returned list  """
+    if args.verbose:
+        msg('Running command: %s' % ([input, cmd])) 
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+        stdout, stderr = p.communicate(input=input)
+        return [p.returncode, stdout, stderr ]
+    except:
+        msg('Command %s failed' % cmd)
+        return [-1, '', 'Failed to run']
+ 
+
+syslog.openlog('getpbsacct')
+
+parser = argparse.ArgumentParser(description='Cronjob to collect PBS accounting files and load them into xdmod.')
+parser.add_argument('-u','--user', dest='user', help='sftp user on remote systems', required=False, default="supermod")
+parser.add_argument('-b','--begintime',  dest='begintime', help='begin time of logs to collect', required=False, default=(int(time.mktime(datetime.datetime.today().replace(hour=00, minute=00, second=00).timetuple()))-86400) )
+parser.add_argument('-e','--endtime',  dest='endtime', help='end time of logs to collect', required=False, default=int(time.mktime(datetime.datetime.today().replace(hour=00, minute=00, second=00).timetuple())) ) 
+parser.add_argument('-r','--host',  dest='host', help='host to collect logs from', required=True)
+parser.add_argument('-p','--path',  dest='path', help='path to accounting files on remote host', required=True)
+parser.add_argument('--resources',  dest='resources', help='yaml dictonary of resource => regex EX: "{\'yellowstone\': \'/^ys/\'}"', required=True, type=yaml.load)
+parser.add_argument('--email',  dest='email', help='who to email on failure', required=False, default="sweg-notify@ucar.edu")
+parser.add_argument('-v','--verbose',   dest='verbose', help='Be verbose', action="store_true", required=False)
+args = parser.parse_args()
+
+#only run with lock #use lsf lock to avoid issues
+LOCK = open('/var/run/getlsfacct', 'a')
+fcntl.flock(LOCK.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+tempdir = tempfile.mkdtemp();
+
+try:
+    begintime	= datetime.datetime.fromtimestamp(int(args.begintime))
+    #endtime	= args.endtime #datetime.datetime.fromtimestamp(int(args.endtime))
+    endtime	= datetime.datetime.fromtimestamp(int(args.endtime))
+    reporttime	= copy.copy(begintime);
+    print "begintime:",begintime,"\n"
+    print "endtime:",endtime,"\n"
+    msg('Begintime: {0} Endtime: {1}'.format(begintime.strftime('%c'), endtime.strftime('%c')));
+
+    while reporttime < endtime:
+	reporttime += datetime.timedelta(days=1);
+	reportfile = reporttime.strftime('%Y%m%d')
+	msg('Report time: {0} ({1})'.format(reporttime.strftime('%c'), reportfile));
+
+	try:
+	    ret = exec_to_string_with_input (['/usr/bin/sftp', '%s@%s' % (args.user, args.host)], 'get %s/%s' % (args.path, reportfile), tempdir);
+	    if ret[0] == 0:
+		for (resname, resregex)  in args.resources.items():
+		    try:
+			ret = exec_to_syslog (['/usr/bin/xdmod-shredder', '-v', '-r', resname, '-f', 'pbs', '-i', reportfile, '--host-filter', resregex], tempdir);
+			if ret[0] != 0:
+			    raise ValueError("Error: shredder failed  {0}\nstderr:\n{1}".format(reportfile, ret[0], ret[1]))
+
+			ret = exec_to_syslog (['/usr/bin/xdmod-ingestor', '-v'], tempdir);
+			if ret[0] != 0:
+			    raise ValueError("Error: ingestor failed  {0}\nstderr:\n{1}".format(reportfile, ret[0], ret[1]))
+
+		    except Exception as exception:
+			msg(exception);
+			ret = exec_to_string_with_input (['/bin/mail', '-s', 'getpbscct shred/ingest failure', args.email], str(exception), tempdir );
+
+	except Exception as exception:
+	    msg(exception);
+	    ret = exec_to_string_with_input (['/bin/mail', '-s', 'getpbscct failure', args.email], str(exception), tempdir );
+
+except Exception as exception:
+	msg(exception);
+	ret = exec_to_string_with_input (['/bin/mail', '-s', 'getpbsacct failure', args.email], str(exception), tempdir );
+
+# cleanup temp dir
+shutil.rmtree(tempdir);
